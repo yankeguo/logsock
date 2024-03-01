@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"flag"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -18,19 +17,27 @@ func main() {
 		if err == nil {
 			return
 		}
-		log.Println("exited with error:", err.Error())
+		os.Exit(1)
 	}()
 
 	var (
+		optLog    string
 		optSocket string
 	)
 
+	flag.StringVar(&optLog, "log", "log.txt", "log file")
 	flag.StringVar(&optSocket, "socket", "logsock.sock", "logging socket")
 	flag.Parse()
 
 	if err = os.RemoveAll(optSocket); err != nil {
 		return
 	}
+
+	var out *os.File
+	if out, err = os.OpenFile(optLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err != nil {
+		return
+	}
+	defer out.Close()
 
 	var listener net.Listener
 	if listener, err = net.Listen("unix", optSocket); err != nil {
@@ -43,13 +50,12 @@ func main() {
 	signal.Notify(chSig, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		chErr <- serveListener(listener, os.Stdout)
+		chErr <- serveListener(listener, out)
 	}()
 
 	select {
 	case err = <-chErr:
-	case sig := <-chSig:
-		log.Println("received signal:", sig)
+	case <-chSig:
 	}
 }
 
