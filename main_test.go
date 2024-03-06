@@ -28,7 +28,7 @@ func (tw *testWriter) Sync() error {
 	return nil
 }
 
-func TestServeUnixSocket(t *testing.T) {
+func TestServeListener(t *testing.T) {
 	buf := make([]byte, 1024)
 	rand.Read(buf)
 	line := []byte(hex.EncodeToString(buf) + "\n")

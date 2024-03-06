@@ -4,10 +4,16 @@ import (
 	"bufio"
 	"flag"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+)
+
+const (
+	outStdout = "-"
 )
 
 func main() {
@@ -17,40 +23,50 @@ func main() {
 		if err == nil {
 			return
 		}
+		log.Println("exited with error:", err.Error())
 		os.Exit(1)
 	}()
 
 	var (
-		optLog    string
-		optSocket string
+		optOut    string
+		optListen string
 	)
 
-	flag.StringVar(&optLog, "log", "log.txt", "log file")
-	flag.StringVar(&optSocket, "socket", "logsock.sock", "logging socket")
+	flag.StringVar(&optOut, "out", outStdout, "output file, use - for stdout")
+	flag.StringVar(&optListen, "listen", "/var/log/log.sock", "address to listen on (support both tcp and unix socket)")
 	flag.Parse()
 
-	if err = os.RemoveAll(optSocket); err != nil {
-		return
-	}
-
 	var out *os.File
-	if out, err = os.OpenFile(optLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err != nil {
-		return
+	if optOut == outStdout {
+		out = os.Stdout
+	} else {
+		if out, err = os.OpenFile(optOut, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err != nil {
+			return
+		}
+		defer out.Close()
 	}
-	defer out.Close()
 
-	var listener net.Listener
-	if listener, err = net.Listen("unix", optSocket); err != nil {
-		return
+	var lis net.Listener
+	if strings.Contains(optListen, ":") {
+		if lis, err = net.Listen("tcp", optListen); err != nil {
+			return
+		}
+	} else {
+		if err = os.RemoveAll(optListen); err != nil {
+			return
+		}
+		if lis, err = net.Listen("unix", optListen); err != nil {
+			return
+		}
 	}
-	defer listener.Close()
+	defer lis.Close()
 
 	chErr := make(chan error, 1)
 	chSig := make(chan os.Signal, 1)
 	signal.Notify(chSig, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		chErr <- serveListener(listener, out)
+		chErr <- serveListener(lis, out)
 	}()
 
 	select {

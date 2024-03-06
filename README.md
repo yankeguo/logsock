@@ -5,8 +5,8 @@ A tool to create an unix domain socket for logging
 ## Usage
 
 ```shell
-./logsock -socket /var/run/log.sock -log /var/log/logsock.log
-./logsock -socket /var/run/log.sock -log /dev/stdout
+./logsock -listen /var/run/log.sock -out -
+./logsock -listen /var/run/log.sock -out /var/log/logsock.log
 ```
 
 ## Credits
