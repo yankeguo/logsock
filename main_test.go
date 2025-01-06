@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"io"
@@ -40,7 +41,17 @@ func TestServeListener(t *testing.T) {
 	listener, err := net.Listen("unix", "test.sock")
 	require.NoError(t, err)
 
-	go serveListener(listener, tw)
+	lines := make(chan []byte)
+
+	go func() {
+		for line := range lines {
+			if _, err := tw.Write(line); err != nil {
+				return
+			}
+		}
+	}()
+
+	go serveListener(context.Background(), listener, lines)
 
 	time.Sleep(time.Second)
 
@@ -75,6 +86,8 @@ func TestServeListener(t *testing.T) {
 	}
 
 	wg.Wait()
+
+	close(lines)
 
 	br := bufio.NewReader(bytes.NewReader(tw.buf.Bytes()))
 

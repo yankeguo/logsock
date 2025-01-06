@@ -2,18 +2,22 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
-	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 const (
-	outStdout = "-"
+	ArgOutStdout = "-"
+
+	Newline = '\n'
 )
 
 func main() {
@@ -28,91 +32,141 @@ func main() {
 	}()
 
 	var (
-		optOut    string
-		optListen string
+		argOut    string
+		argListen string
 	)
 
-	flag.StringVar(&optOut, "out", outStdout, "output file, use - for stdout")
-	flag.StringVar(&optListen, "listen", "/var/log/log.sock", "address to listen on (support both tcp and unix socket)")
+	flag.StringVar(&argOut, "out", ArgOutStdout, "output file, use - for stdout")
+	flag.StringVar(&argListen, "listen", "/var/log/log.sock", "address to listen on (support both tcp and unix socket)")
 	flag.Parse()
 
 	var out *os.File
-	if optOut == outStdout {
+
+	if argOut == ArgOutStdout {
 		out = os.Stdout
 	} else {
-		if out, err = os.OpenFile(optOut, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err != nil {
+		if out, err = os.OpenFile(argOut, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err != nil {
 			return
 		}
 		defer out.Close()
 	}
 
 	var lis net.Listener
-	if strings.Contains(optListen, ":") {
-		if lis, err = net.Listen("tcp", optListen); err != nil {
+
+	if strings.Contains(argListen, ":") {
+		if lis, err = net.Listen("tcp", argListen); err != nil {
 			return
 		}
 	} else {
-		if err = os.RemoveAll(optListen); err != nil {
+		if err = os.RemoveAll(argListen); err != nil {
 			return
 		}
-		if lis, err = net.Listen("unix", optListen); err != nil {
+		if lis, err = net.Listen("unix", argListen); err != nil {
 			return
 		}
 	}
+
 	defer lis.Close()
 
 	chErr := make(chan error, 1)
 	chSig := make(chan os.Signal, 1)
 	signal.Notify(chSig, syscall.SIGINT, syscall.SIGTERM)
 
+	var (
+		doneServe = make(chan struct{})
+		doneLines = make(chan struct{})
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lines := make(chan []byte)
+
 	go func() {
-		chErr <- serveListener(lis, out)
+		defer close(doneLines)
+		for line := range lines {
+			if _, err := out.Write(line); err != nil {
+				return
+			}
+		}
+		out.Sync()
+	}()
+
+	go func() {
+		defer close(doneServe)
+		chErr <- serveListener(ctx, lis, lines)
 	}()
 
 	select {
 	case err = <-chErr:
-	case <-chSig:
+		log.Println("error:", err.Error())
+	case sig := <-chSig:
+		log.Println("signal received:", sig.String())
+		time.Sleep(time.Second * 3)
 	}
+
+	cancel()
+
+	select {
+	case <-doneServe:
+	case <-time.After(time.Second * 3):
+	}
+
+	close(lines)
+
+	<-doneLines
 }
 
-// WriterWithSync is an interface that extends io.Writer with a Sync method.
-type WriterWithSync interface {
-	io.Writer
-
-	Sync() error
-}
-
-func serveListener(listener net.Listener, w WriterWithSync) (err error) {
-	lines := make(chan []byte)
-	defer close(lines)
+func serveListener(ctx context.Context, lis net.Listener, lines chan []byte) (err error) {
+	done := make(chan struct{})
+	defer close(done)
 
 	go func() {
-		for line := range lines {
-			w.Write(line)
-			w.Sync()
+		select {
+		case <-ctx.Done():
+			lis.Close()
+		case <-done:
 		}
 	}()
 
+	wg := &sync.WaitGroup{}
+
 	for {
 		var conn net.Conn
-		if conn, err = listener.Accept(); err != nil {
-			return
+		if conn, err = lis.Accept(); err != nil {
+			break
 		}
-		go handleConn(conn, lines)
+		wg.Add(1)
+		go handleConn(ctx, wg, conn, lines)
 	}
+
+	wg.Wait()
+	return
 }
 
-func handleConn(conn net.Conn, lines chan []byte) {
+func handleConn(ctx context.Context, wg *sync.WaitGroup, conn net.Conn, lines chan []byte) {
+	defer wg.Done()
 	defer conn.Close()
+
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-done:
+		}
+	}()
 
 	br := bufio.NewReader(conn)
 
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := br.ReadBytes(Newline)
 
 		if len(line) > 0 {
-			if line[len(line)-1] != '\n' {
-				line = append(line, '\n')
+			if line[len(line)-1] != Newline {
+				line = append(line, Newline)
 			}
 			lines <- line
 		}
